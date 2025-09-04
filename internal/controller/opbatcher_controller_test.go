@@ -314,12 +314,12 @@ var _ = Describe("OpBatcher Controller", func() {
 
 			// First reconcile - typically adds finalizer
 			result, err := controllerReconciler.Reconcile(ctx, req)
-			fmt.Fprintf(GinkgoWriter, "First reconcile result: %+v, error: %v\n", result, err)
+			_, _ = fmt.Fprintf(GinkgoWriter, "First reconcile result: %+v, error: %v\n", result, err)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Second reconcile - handles main logic
 			result, err = controllerReconciler.Reconcile(ctx, req)
-			fmt.Fprintf(GinkgoWriter, "Second reconcile result: %+v, error: %v\n", result, err)
+			_, _ = fmt.Fprintf(GinkgoWriter, "Second reconcile result: %+v, error: %v\n", result, err)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Checking that OpBatcher was updated with proper conditions")
@@ -331,10 +331,10 @@ var _ = Describe("OpBatcher Controller", func() {
 			}, timeout, interval).Should(Succeed())
 
 			// Debug: Print actual conditions and phase
-			fmt.Fprintf(GinkgoWriter, "Actual Phase: %s\n", opbatcher.Status.Phase)
-			fmt.Fprintf(GinkgoWriter, "Actual Conditions:\n")
+			_, _ = fmt.Fprintf(GinkgoWriter, "Actual Phase: %s\n", opbatcher.Status.Phase)
+			_, _ = fmt.Fprintf(GinkgoWriter, "Actual Conditions:\n")
 			for _, condition := range opbatcher.Status.Conditions {
-				fmt.Fprintf(GinkgoWriter, "  - Type: %s, Status: %s, Reason: %s, Message: %s\n",
+				_, _ = fmt.Fprintf(GinkgoWriter, "  - Type: %s, Status: %s, Reason: %s, Message: %s\n",
 					condition.Type, condition.Status, condition.Reason, condition.Message)
 			}
 
