@@ -337,8 +337,21 @@ func (r *OpBatcherReconciler) validatePrivateKeySecret(ctx context.Context, opBa
 
 	// Basic format validation - should be hex string
 	privateKeyStr := strings.TrimSpace(string(privateKeyData))
-	if !strings.HasPrefix(privateKeyStr, "0x") || len(privateKeyStr) != 66 {
-		return fmt.Errorf("private key in secret %s key %s is not a valid hex string", secretName, secretKey)
+	if !strings.HasPrefix(privateKeyStr, "0x") {
+		return fmt.Errorf("private key in secret %s key %s must start with 0x", secretName, secretKey)
+	}
+
+	// Check if it's valid hex (without 0x prefix) and correct length
+	hexPart := privateKeyStr[2:] // Remove 0x prefix
+	if len(hexPart) != 64 {
+		return fmt.Errorf("private key in secret %s key %s must be 64 hex characters after 0x prefix (got %d)", secretName, secretKey, len(hexPart))
+	}
+
+	// Validate hex characters
+	for i, c := range hexPart {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return fmt.Errorf("private key in secret %s key %s contains invalid hex character '%c' at position %d", secretName, secretKey, c, i+2)
+		}
 	}
 
 	return nil

@@ -109,6 +109,26 @@ var _ = Describe("OpBatcher Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, network)).To(Succeed())
 
+			// Manually set status for unit testing (no controller interference)
+			network.Status = optimismv1alpha1.OptimismNetworkStatus{
+				Phase: "Ready",
+				Conditions: []metav1.Condition{
+					{
+						Type:               "ConfigurationValid",
+						Status:             metav1.ConditionTrue,
+						Reason:             "ValidConfiguration",
+						LastTransitionTime: metav1.Now(),
+					},
+					{
+						Type:               "L1Connected",
+						Status:             metav1.ConditionTrue,
+						Reason:             "RPCEndpointReachable",
+						LastTransitionTime: metav1.Now(),
+					},
+				},
+			}
+			Expect(k8sClient.Status().Update(ctx, network)).To(Succeed())
+
 			// Register cleanup for network
 			DeferCleanup(func() {
 				networkToDelete := &optimismv1alpha1.OptimismNetwork{}
@@ -152,6 +172,20 @@ var _ = Describe("OpBatcher Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, sequencer)).To(Succeed())
 
+			// Manually set status for unit testing (no controller interference)
+			sequencer.Status = optimismv1alpha1.OpNodeStatus{
+				Phase: "Running",
+				Conditions: []metav1.Condition{
+					{
+						Type:               "ConfigurationValid",
+						Status:             metav1.ConditionTrue,
+						Reason:             "ValidConfiguration",
+						LastTransitionTime: metav1.Now(),
+					},
+				},
+			}
+			Expect(k8sClient.Status().Update(ctx, sequencer)).To(Succeed())
+
 			// Register cleanup for sequencer
 			DeferCleanup(func() {
 				sequencerToDelete := &optimismv1alpha1.OpNode{}
@@ -172,7 +206,7 @@ var _ = Describe("OpBatcher Controller", func() {
 					Namespace: "default",
 				},
 				Data: map[string][]byte{
-					"private-key": []byte("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef12"),
+					"private-key": []byte("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"),
 				},
 			}
 			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
@@ -244,6 +278,18 @@ var _ = Describe("OpBatcher Controller", func() {
 				err := k8sClient.Get(ctx, types.NamespacedName{Name: resourceName, Namespace: "default"}, opbatcherToDelete)
 				if err == nil {
 					Expect(k8sClient.Delete(ctx, opbatcherToDelete)).To(Succeed())
+
+					// For unit tests, manually trigger reconciliation to handle deletion
+					testReconciler := &OpBatcherReconciler{
+						Client: k8sClient,
+						Scheme: k8sClient.Scheme(),
+					}
+					_, err := testReconciler.Reconcile(ctx, reconcile.Request{
+						NamespacedName: types.NamespacedName{Name: resourceName, Namespace: "default"},
+					})
+					Expect(err).NotTo(HaveOccurred())
+
+					// Now verify deletion completed
 					Eventually(func() bool {
 						err := k8sClient.Get(ctx, types.NamespacedName{Name: resourceName, Namespace: "default"}, opbatcherToDelete)
 						return apierrors.IsNotFound(err)
@@ -251,28 +297,29 @@ var _ = Describe("OpBatcher Controller", func() {
 				}
 			})
 
-			By("Reconciling the created resource twice (finalizer, then logic)")
+			By("Directly testing the OpBatcher controller reconciler")
+			// Use unit testing approach for complex controllers with external dependencies
 			controllerReconciler := &OpBatcherReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
 
-			// First reconcile - adds finalizer
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+			// Test reconciliation directly (multiple times to handle requeues)
+			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      resourceName,
 					Namespace: "default",
 				},
-			})
+			}
+
+			// First reconcile - typically adds finalizer
+			result, err := controllerReconciler.Reconcile(ctx, req)
+			fmt.Fprintf(GinkgoWriter, "First reconcile result: %+v, error: %v\n", result, err)
 			Expect(err).NotTo(HaveOccurred())
 
-			// Second reconcile - actual logic
-			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      resourceName,
-					Namespace: "default",
-				},
-			})
+			// Second reconcile - handles main logic
+			result, err = controllerReconciler.Reconcile(ctx, req)
+			fmt.Fprintf(GinkgoWriter, "Second reconcile result: %+v, error: %v\n", result, err)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Checking that OpBatcher was updated with proper conditions")
@@ -283,11 +330,19 @@ var _ = Describe("OpBatcher Controller", func() {
 				}, opbatcher)
 			}, timeout, interval).Should(Succeed())
 
+			// Debug: Print actual conditions and phase
+			fmt.Fprintf(GinkgoWriter, "Actual Phase: %s\n", opbatcher.Status.Phase)
+			fmt.Fprintf(GinkgoWriter, "Actual Conditions:\n")
+			for _, condition := range opbatcher.Status.Conditions {
+				fmt.Fprintf(GinkgoWriter, "  - Type: %s, Status: %s, Reason: %s, Message: %s\n",
+					condition.Type, condition.Status, condition.Reason, condition.Message)
+			}
+
 			// Should have configuration valid condition and network reference condition
 			Expect(opbatcher.Status.Conditions).To(ContainElement(HaveField("Type", "ConfigurationValid")))
 			Expect(opbatcher.Status.Conditions).To(ContainElement(HaveField("Type", "NetworkReference")))
-			// Since the OptimismNetwork won't be ready in tests, we expect it to be pending
-			Expect(opbatcher.Status.Phase).To(Equal(OpBatcherPhasePending))
+			// Since all dependencies are ready in the test, we expect it to be running
+			Expect(opbatcher.Status.Phase).To(Equal(OpBatcherPhaseRunning))
 		})
 
 		It("should create a Deployment", func() {
@@ -322,12 +377,19 @@ var _ = Describe("OpBatcher Controller", func() {
 				Scheme: k8sClient.Scheme(),
 			}
 
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      resourceName,
 					Namespace: "default",
 				},
-			})
+			}
+
+			// First reconcile - adds finalizer
+			_, err := controllerReconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Second reconcile - handles main logic and creates deployment
+			_, err = controllerReconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Checking that a Deployment was created")
@@ -377,12 +439,19 @@ var _ = Describe("OpBatcher Controller", func() {
 				Scheme: k8sClient.Scheme(),
 			}
 
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      resourceName,
 					Namespace: "default",
 				},
-			})
+			}
+
+			// First reconcile - adds finalizer
+			_, err := controllerReconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Second reconcile - handles main logic and creates service
+			_, err = controllerReconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Checking that a Service was created")
@@ -428,12 +497,19 @@ var _ = Describe("OpBatcher Controller", func() {
 				Scheme: k8sClient.Scheme(),
 			}
 
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      resourceName,
 					Namespace: "default",
 				},
-			})
+			}
+
+			// First reconcile - adds finalizer
+			_, err := controllerReconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Second reconcile - handles validation and should set error conditions
+			_, err = controllerReconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred()) // Should not error, but should set error conditions
 
 			By("Checking that OpBatcher has error condition")
@@ -484,12 +560,19 @@ var _ = Describe("OpBatcher Controller", func() {
 				Scheme: k8sClient.Scheme(),
 			}
 
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      resourceName,
 					Namespace: "default",
 				},
-			})
+			}
+
+			// First reconcile - adds finalizer
+			_, err := controllerReconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Second reconcile - should detect missing network and set error conditions
+			_, err = controllerReconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Checking that OpBatcher has network error condition")
@@ -546,12 +629,19 @@ var _ = Describe("OpBatcher Controller", func() {
 				Scheme: k8sClient.Scheme(),
 			}
 
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      resourceName,
 					Namespace: "default",
 				},
-			})
+			}
+
+			// First reconcile - adds finalizer
+			_, err := controllerReconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Second reconcile - should detect network not ready and set pending state
+			_, err = controllerReconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Checking that OpBatcher is pending")
