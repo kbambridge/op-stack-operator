@@ -153,6 +153,15 @@ func createOpGethContainer(
 		"--rollup.sequencerhttp=" + getSequencerEndpoint(opNode, network),
 	}
 
+	// Add rollup configuration for OP Stack networks
+	if network.Spec.NetworkName != "" && isWellKnownNetwork(network.Spec.NetworkName) {
+		// Use built-in network configuration for well-known networks
+		args = append(args, "--op-network="+network.Spec.NetworkName)
+	} else {
+		// Use custom rollup configuration
+		args = append(args, "--rollup.config=/config/rollup.json")
+	}
+
 	// Add sync mode
 	syncMode := "snap"
 	if opNode.Spec.OpGeth.SyncMode != "" {
@@ -192,13 +201,19 @@ func createOpGethContainer(
 		}
 	}
 
-	// Add auth RPC configuration
+	// Add auth RPC configuration (always required for op-node communication)
+	var authHost string = "127.0.0.1"
+	var authPort int32 = 8551
+
 	if opNode.Spec.OpGeth.Networking != nil && opNode.Spec.OpGeth.Networking.AuthRPC != nil {
 		authConfig := opNode.Spec.OpGeth.Networking.AuthRPC
-		args = append(args, "--authrpc.addr="+getDefaultString(authConfig.Host, "127.0.0.1"))
-		args = append(args, "--authrpc.port="+fmt.Sprintf("%d", getDefaultInt32(authConfig.Port, 8551)))
-		args = append(args, "--authrpc.jwtsecret=/secrets/jwt/jwt")
+		authHost = getDefaultString(authConfig.Host, "127.0.0.1")
+		authPort = getDefaultInt32(authConfig.Port, 8551)
 	}
+
+	args = append(args, "--authrpc.addr="+authHost)
+	args = append(args, "--authrpc.port="+fmt.Sprintf("%d", authPort))
+	args = append(args, "--authrpc.jwtsecret=/secrets/jwt/jwt")
 
 	container := corev1.Container{
 		Name:            "op-geth",
@@ -285,12 +300,19 @@ func createOpNodeContainer(
 		"--l1=" + network.Spec.L1RpcUrl,
 		"--l2=http://127.0.0.1:" + fmt.Sprintf("%d", authRPCPort),
 		"--l2.jwt-secret=/secrets/jwt/jwt",
-		"--rollup.config=/config/rollup.json",
 	}
 
-	// Add network name if provided
-	if network.Spec.NetworkName != "" {
+	// Add L1 Beacon API endpoint if provided
+	if network.Spec.L1BeaconUrl != "" {
+		args = append(args, "--l1.beacon="+network.Spec.L1BeaconUrl)
+	}
+
+	// Use network name for well-known networks, otherwise use rollup config
+	// This avoids the conflict between --network and --rollup.config flags
+	if network.Spec.NetworkName != "" && isWellKnownNetwork(network.Spec.NetworkName) {
 		args = append(args, "--network="+network.Spec.NetworkName)
+	} else {
+		args = append(args, "--rollup.config=/config/rollup.json")
 	}
 
 	// Add RPC configuration
@@ -307,6 +329,9 @@ func createOpNodeContainer(
 	if opNode.Spec.OpNode.P2P != nil && opNode.Spec.OpNode.P2P.Enabled {
 		p2pConfig := opNode.Spec.OpNode.P2P
 		args = append(args, "--p2p.listen.tcp="+fmt.Sprintf("%d", getDefaultInt32(p2pConfig.ListenPort, 9003)))
+
+		// Add data directory for P2P discovery database
+		args = append(args, "--p2p.discovery.path=/data/opnode/discovery")
 
 		if p2pConfig.Discovery != nil && !p2pConfig.Discovery.Enabled {
 			args = append(args, "--p2p.no-discovery")
@@ -357,6 +382,7 @@ func createOpNodeContainer(
 	volumeMounts := []corev1.VolumeMount{
 		{Name: "jwt-secret", MountPath: "/secrets/jwt", ReadOnly: true},
 		{Name: "rollup-config", MountPath: "/config", ReadOnly: true},
+		{Name: "op-node-data", MountPath: "/data/opnode", ReadOnly: false},
 	}
 
 	// Add P2P key mount if either auto-generated or user-provided
@@ -374,6 +400,7 @@ func createOpNodeContainer(
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Command:         []string{"op-node"},
 		Args:            args,
+		WorkingDir:      "/data/opnode",
 		Resources:       resources,
 		Ports: []corev1.ContainerPort{
 			{Name: "rpc", ContainerPort: 9545, Protocol: corev1.ProtocolTCP},
@@ -429,6 +456,12 @@ func createVolumes(opNode *optimismv1alpha1.OpNode, network *optimismv1alpha1.Op
 						Name: network.Name + "-rollup-config",
 					},
 				},
+			},
+		},
+		{
+			Name: "op-node-data",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
 			},
 		},
 	}
@@ -588,4 +621,16 @@ func getAuthRPCPort(opNode *optimismv1alpha1.OpNode) int32 {
 		return getDefaultInt32(opNode.Spec.OpGeth.Networking.AuthRPC.Port, 8551)
 	}
 	return 8551
+}
+
+// isWellKnownNetwork checks if the network name is a well-known network supported by op-node
+func isWellKnownNetwork(networkName string) bool {
+	wellKnownNetworks := map[string]bool{
+		"op-mainnet":   true,
+		"op-sepolia":   true,
+		"base-mainnet": true,
+		"base-sepolia": true,
+		// Add more well-known networks as needed
+	}
+	return wellKnownNetworks[networkName]
 }

@@ -1,0 +1,83 @@
+# Simplified Kind cluster configuration for OP Stack Operator with increased memory
+# This configuration allocates more resources for OP Stack workloads
+apiVersion: kind.x-k8s.io/v1alpha4
+kind: Cluster
+name: op-stack-operator
+nodes:
+  # Control plane node with increased resources
+  - role: control-plane
+    image: kindest/node:v1.31.0
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+            # Increase memory limits for control plane
+            system-reserved: "memory=200Mi"
+            kube-reserved: "memory=200Mi"
+      - |
+        kind: ClusterConfiguration
+        controllerManager:
+          extraArgs:
+            # Allow more pods per node
+            node-cidr-mask-size: "24"
+        scheduler:
+          extraArgs:
+            # Enable more efficient scheduling
+            v: "2"
+    extraPortMappings:
+      # Expose ingress controller ports
+      - containerPort: 80
+        hostPort: 80
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 443
+        protocol: TCP
+      # Expose OP Stack ports (using high port numbers to avoid conflicts)
+      - containerPort: 30545
+        hostPort: 18545
+        protocol: TCP
+      - containerPort: 30546
+        hostPort: 18546
+        protocol: TCP
+
+  # Worker nodes with optimized settings for OP Stack
+  - role: worker
+    image: kindest/node:v1.31.0
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            # Optimize for OP Stack workloads
+            max-pods: "200"
+            # Reserve less memory for system, more for workloads
+            system-reserved: "cpu=100m,memory=100Mi"
+            kube-reserved: "cpu=50m,memory=100Mi"
+            # Enable swap for better memory management
+            fail-swap-on: "false"
+            # Increase image garbage collection thresholds
+            image-gc-high-threshold: "90"
+            image-gc-low-threshold: "80"
+
+  # Second worker node for better resource distribution
+  - role: worker
+    image: kindest/node:v1.31.0
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            max-pods: "200"
+            system-reserved: "cpu=100m,memory=100Mi"
+            kube-reserved: "cpu=50m,memory=100Mi"
+            fail-swap-on: "false"
+            image-gc-high-threshold: "90"
+            image-gc-low-threshold: "80"
+
+# Networking configuration
+networking:
+  disableDefaultCNI: false
+  podSubnet: "10.244.0.0/16"
+  serviceSubnet: "10.96.0.0/16"
