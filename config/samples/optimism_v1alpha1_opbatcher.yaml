@@ -84,5 +84,5 @@ metadata:
 type: Opaque
 data:
   # Example private key (DO NOT USE IN PRODUCTION!)
-  # This is a test key for development only
-  private-key: MHgxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTI=
+  # This is a test key for development only - exactly 64 hex characters after 0x
+  private-key: MHgxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmCg==
