@@ -223,10 +223,10 @@ Controllers should properly manage status conditions for observability:
 
 ### Prerequisites
 - Go 1.23.0+
-- Docker 17.03+
-- kubectl 1.11.3+
+- Docker
+- kubectl
 - Kind (for e2e testing)
-- Access to Kubernetes cluster v1.11.3+
+- Access to Kubernetes cluster
 
 ## Code Generation
 
