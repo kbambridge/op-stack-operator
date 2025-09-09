@@ -88,11 +88,19 @@ test-integration: manifests generate fmt vet setup-envtest ## Run integration te
 .PHONY: test-e2e
 test-e2e: manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
 	@command -v kind >/dev/null 2>&1 || { \
-		echo "Kind is not installed. Please install Kind manually."; \
+		echo "❌ Kind is not installed. Please install Kind manually:"; \
+		echo "   brew install kind  # macOS"; \
+		echo "   # or visit https://kind.sigs.k8s.io/docs/user/quick-start/#installation"; \
 		exit 1; \
 	}
-	@kind get clusters | grep -q 'kind' || { \
-		echo "No Kind cluster is running. Please start a Kind cluster before running the e2e tests."; \
+	@kind get clusters | grep -q 'op-stack-operator' || { \
+		echo "❌ OP Stack Operator Kind cluster is not running."; \
+		echo "   Run: make kind-create"; \
+		exit 1; \
+	}
+	@kubectl config current-context | grep -q 'kind-op-stack-operator' || { \
+		echo "❌ kubectl context is not set to the OP Stack Operator cluster."; \
+		echo "   Run: kubectl config use-context kind-op-stack-operator"; \
 		exit 1; \
 	}
 	go test ./test/e2e/ -v -ginkgo.v
@@ -170,9 +178,36 @@ test-integration-with-env: manifests generate fmt vet setup-envtest ## Run integ
 		exit 1; \
 	fi
 
+##@ Kind Cluster Management
+
+.PHONY: kind-create
+kind-create: ## Create Kind cluster for OP Stack Operator development
+	@./scripts/setup-kind-cluster.sh
+
+.PHONY: kind-delete
+kind-delete: ## Delete Kind cluster and cleanup
+	@echo "🗑️  Deleting Kind cluster..."
+	kind delete cluster --name op-stack-operator || true
+	@echo "🗑️  Stopping local registry..."
+	docker stop kind-registry || true
+	docker rm kind-registry || true
+	@echo "✅ Cleanup complete"
+
+.PHONY: kind-status
+kind-status: ## Show Kind cluster status
+	@echo "📋 Kind Cluster Status:"
+	@echo "Clusters:"
+	@kind get clusters || echo "No clusters found"
+	@echo ""
+	@echo "Registry:"
+	@docker ps --filter name=kind-registry --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" || echo "No registry found"
+	@echo ""
+	@echo "Kubeconfig context:"
+	@kubectl config current-context 2>/dev/null || echo "No kubectl context set"
+
 .PHONY: kind-load
 kind-load: docker-build ## Load image into kind cluster for testing
-	kind load docker-image ${IMG}
+	kind load docker-image ${IMG} --name op-stack-operator
 
 .PHONY: deploy-samples
 deploy-samples: ## Deploy sample configurations

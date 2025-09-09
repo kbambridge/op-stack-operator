@@ -94,6 +94,7 @@ type LoggingConfig struct {
 // MetricsConfig defines metrics configuration
 type MetricsConfig struct {
 	Enabled bool   `json:"enabled,omitempty"`
+	Host    string `json:"host,omitempty"`
 	Port    int32  `json:"port,omitempty"`
 	Path    string `json:"path,omitempty"`
 }

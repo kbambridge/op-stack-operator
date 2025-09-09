@@ -37,7 +37,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	optimismv1alpha1 "github.com/ethereum-optimism/op-stack-operator/api/v1alpha1"
-	"github.com/ethereum-optimism/op-stack-operator/pkg/discovery"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -103,12 +102,8 @@ var _ = BeforeSuite(func() {
 	Expect(err).ToNot(HaveOccurred())
 
 	By("setting up controllers")
-	err = (&OptimismNetworkReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		DiscoveryService: discovery.NewContractDiscoveryService(24 * time.Hour),
-	}).SetupWithManager(mgr)
-	Expect(err).ToNot(HaveOccurred())
+	// Note: Only register controllers needed for integration tests
+	// Complex controllers with external dependencies should use unit tests instead
 
 	// +kubebuilder:scaffold:builder
 

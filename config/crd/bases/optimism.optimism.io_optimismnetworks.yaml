@@ -179,6 +179,8 @@ spec:
                     properties:
                       enabled:
                         type: boolean
+                      host:
+                        type: string
                       path:
                         type: string
                       port:

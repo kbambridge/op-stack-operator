@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -74,8 +75,16 @@ var _ = Describe("Manager", Ordered, func() {
 	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
 	// and deleting the namespace.
 	AfterAll(func() {
+		By("cleaning up test OpNode resources")
+		cmd := exec.Command("kubectl", "delete", "opnode", "--all", "-n", namespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
+		By("cleaning up test OptimismNetwork resources")
+		cmd = exec.Command("kubectl", "delete", "optimismnetwork", "--all", "-n", namespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
 		By("cleaning up the curl pod for metrics")
-		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
+		cmd = exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
 		_, _ = utils.Run(cmd)
 
 		By("undeploying the controller-manager")
@@ -263,14 +272,247 @@ var _ = Describe("Manager", Ordered, func() {
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 
-		// TODO: Customize the e2e test suite with scenarios specific to your project.
-		// Consider applying sample/CR(s) and check their status and/or verifying
-		// the reconciliation by using the metrics, i.e.:
-		// metricsOutput := getMetricsOutput()
-		// Expect(metricsOutput).To(ContainSubstring(
-		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
-		//    strings.ToLower(<Kind>),
-		// ))
+		It("should successfully deploy and reconcile OptimismNetwork and OpNode resources", func() {
+			// Load real L1 RPC URLs from environment (same as integration tests)
+			testL1RpcUrl := os.Getenv("TEST_L1_RPC_URL")
+			if testL1RpcUrl == "" {
+				Skip("Skipping OpNode e2e tests - no TEST_L1_RPC_URL environment variable set")
+			}
+
+			// Use beacon URL from environment if available, otherwise fallback to localhost
+			testL1BeaconUrl := os.Getenv("TEST_L1_BEACON_URL")
+			if testL1BeaconUrl == "" {
+				testL1BeaconUrl = "http://localhost:5052"
+			}
+
+			By("creating test OptimismNetwork resource")
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(`
+apiVersion: optimism.optimism.io/v1alpha1
+kind: OptimismNetwork
+metadata:
+  name: test-network
+  namespace: ` + namespace + `
+spec:
+  networkName: "op-sepolia"
+  chainID: 11155420
+  l1ChainID: 11155111
+  l1RpcUrl: "` + testL1RpcUrl + `"
+  l1BeaconUrl: "` + testL1BeaconUrl + `"
+  l1RpcTimeout: "10s"
+  rollupConfig:
+    autoDiscover: true
+  l2Genesis:
+    autoDiscover: true
+  contractAddresses:
+    discoveryMethod: "well-known"
+    cacheTimeout: "24h"
+  sharedConfig:
+    logging:
+      level: "info"
+      format: "logfmt"
+    metrics:
+      enabled: true
+      port: 7300
+`)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create OptimismNetwork")
+
+			By("waiting for OptimismNetwork to be created")
+			Eventually(func() bool {
+				cmd := exec.Command("kubectl", "get", "optimismnetwork", "test-network", "-n", namespace)
+				_, err := utils.Run(cmd)
+				return err == nil
+			}, 2*time.Minute).Should(BeTrue())
+
+			By("creating test OpNode replica resource")
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(`
+apiVersion: optimism.optimism.io/v1alpha1
+kind: OpNode
+metadata:
+  name: test-opnode-replica
+  namespace: ` + namespace + `
+spec:
+  optimismNetworkRef:
+    name: test-network
+    namespace: ` + namespace + `
+  nodeType: "replica"
+  opNode:
+    syncMode: "execution-layer"
+    p2p:
+      enabled: true
+      listenPort: 9003
+      discovery:
+        enabled: true
+      privateKey:
+        generate: true
+    rpc:
+      enabled: true
+      host: "0.0.0.0"
+      port: 9545
+      enableAdmin: false
+    sequencer:
+      enabled: false
+  opGeth:
+    dataDir: "/data/geth"
+    syncMode: "snap"
+    storage:
+      size: "10Gi"
+      storageClass: "standard"
+      accessMode: "ReadWriteOnce"
+    networking:
+      http:
+        enabled: true
+        host: "0.0.0.0"
+        port: 8545
+        apis: ["web3", "eth", "net"]
+      ws:
+        enabled: true
+        host: "0.0.0.0"
+        port: 8546
+        apis: ["web3", "eth"]
+      authrpc:
+        host: "127.0.0.1"
+        port: 8551
+        apis: ["engine", "eth"]
+  resources:
+    opNode:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "500m"
+        memory: "1Gi"
+    opGeth:
+      requests:
+        cpu: "200m"
+        memory: "512Mi"
+      limits:
+        cpu: "1000m"
+        memory: "2Gi"
+  service:
+    type: "ClusterIP"
+`)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create OpNode")
+
+			By("waiting for OpNode to be created")
+			Eventually(func() bool {
+				cmd := exec.Command("kubectl", "get", "opnode", "test-opnode-replica", "-n", namespace)
+				_, err := utils.Run(cmd)
+				return err == nil
+			}, 2*time.Minute).Should(BeTrue())
+
+			By("verifying StatefulSet is created for OpNode")
+			Eventually(func() bool {
+				cmd := exec.Command("kubectl", "get", "statefulset", "test-opnode-replica", "-n", namespace)
+				_, err := utils.Run(cmd)
+				return err == nil
+			}, 3*time.Minute).Should(BeTrue())
+
+			By("verifying Service is created for OpNode")
+			Eventually(func() bool {
+				cmd := exec.Command("kubectl", "get", "service", "test-opnode-replica", "-n", namespace)
+				_, err := utils.Run(cmd)
+				return err == nil
+			}, 2*time.Minute).Should(BeTrue())
+
+			By("verifying JWT secret is created")
+			Eventually(func() bool {
+				cmd := exec.Command("kubectl", "get", "secret", "test-opnode-replica-jwt", "-n", namespace)
+				_, err := utils.Run(cmd)
+				return err == nil
+			}, 2*time.Minute).Should(BeTrue())
+
+			By("verifying P2P secret is created")
+			Eventually(func() bool {
+				cmd := exec.Command("kubectl", "get", "secret", "test-opnode-replica-p2p", "-n", namespace)
+				_, err := utils.Run(cmd)
+				return err == nil
+			}, 2*time.Minute).Should(BeTrue())
+
+			By("checking OpNode status conditions")
+			Eventually(func() bool {
+				cmd := exec.Command("kubectl", "get", "opnode", "test-opnode-replica", "-n", namespace,
+					"-o", "jsonpath={.status.conditions}")
+				output, err := utils.Run(cmd)
+				if err != nil {
+					return false
+				}
+				return strings.Contains(output, "ConfigurationValid") || strings.Contains(output, "SecretsReady")
+			}, 3*time.Minute).Should(BeTrue())
+
+			By("verifying controller reconciliation metrics")
+			metricsOutput := getMetricsOutput()
+			Expect(metricsOutput).To(ContainSubstring(
+				`controller_runtime_reconcile_total{controller="opnode"`),
+				"OpNode controller should have reconciliation metrics")
+			Expect(metricsOutput).To(ContainSubstring(
+				`controller_runtime_reconcile_total{controller="optimismnetwork"`),
+				"OptimismNetwork controller should have reconciliation metrics")
+		})
+
+		It("should handle OpNode deletion and cleanup properly", func() {
+			// Ensure we have L1 RPC URL configured (same as other test)
+			testL1RpcUrl := os.Getenv("TEST_L1_RPC_URL")
+			if testL1RpcUrl == "" {
+				Skip("Skipping OpNode deletion e2e test - no TEST_L1_RPC_URL environment variable set")
+			}
+
+			By("creating a temporary OpNode for deletion test")
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(`
+apiVersion: optimism.optimism.io/v1alpha1
+kind: OpNode
+metadata:
+  name: test-opnode-delete
+  namespace: ` + namespace + `
+spec:
+  optimismNetworkRef:
+    name: test-network
+    namespace: ` + namespace + `
+  nodeType: "replica"
+  opNode:
+    syncMode: "execution-layer"
+    sequencer:
+      enabled: false
+  opGeth:
+    dataDir: "/data/geth"
+    storage:
+      size: "1Gi"
+      storageClass: "standard"
+      accessMode: "ReadWriteOnce"
+`)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create OpNode for deletion test")
+
+			By("waiting for OpNode to be created")
+			Eventually(func() bool {
+				cmd := exec.Command("kubectl", "get", "opnode", "test-opnode-delete", "-n", namespace)
+				_, err := utils.Run(cmd)
+				return err == nil
+			}, 2*time.Minute).Should(BeTrue())
+
+			By("deleting the OpNode")
+			cmd = exec.Command("kubectl", "delete", "opnode", "test-opnode-delete", "-n", namespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete OpNode")
+
+			By("verifying OpNode is fully deleted")
+			Eventually(func() bool {
+				cmd := exec.Command("kubectl", "get", "opnode", "test-opnode-delete", "-n", namespace)
+				_, err := utils.Run(cmd)
+				return err != nil // Should fail when resource is deleted
+			}, 3*time.Minute).Should(BeTrue())
+
+			By("verifying associated resources are cleaned up")
+			Eventually(func() bool {
+				cmd := exec.Command("kubectl", "get", "statefulset", "test-opnode-delete", "-n", namespace)
+				_, err := utils.Run(cmd)
+				return err != nil // Should fail when StatefulSet is deleted
+			}, 2*time.Minute).Should(BeTrue())
+		})
 	})
 })
 

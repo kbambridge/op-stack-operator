@@ -6,4 +6,83 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: opbatcher-sample
 spec:
-  # TODO(user): Add fields here
+  # Reference to the OptimismNetwork
+  optimismNetworkRef:
+    name: optimismnetwork-sample
+
+  # Reference to the sequencer OpNode (optional - for internal sequencer)
+  sequencerRef:
+    name: sequencer-sample
+
+  # Private key for L1 transaction signing
+  privateKey:
+    secretRef:
+      name: batcher-private-key
+      key: private-key
+
+  # Batching configuration
+  batching:
+    maxChannelDuration: "10m"
+    subSafetyMargin: 10
+    targetL1TxSize: 120000
+    targetNumFrames: 1
+    approxComprRatio: "0.4"
+
+  # Data availability configuration  
+  dataAvailability:
+    type: "blobs"
+    maxBlobsPerTx: 6
+
+  # Throttling configuration
+  throttling:
+    enabled: true
+    maxPendingTx: 10
+    backlogSafetyMargin: 10
+
+  # L1 transaction management
+  l1Transaction:
+    feeLimitMultiplier: "5"
+    resubmissionTimeout: "48s"
+    numConfirmations: 10
+    safeAbortNonceTooLowCount: 3
+
+  # RPC configuration
+  rpc:
+    enabled: true
+    host: "127.0.0.1"
+    port: 8548
+
+  # Metrics configuration
+  metrics:
+    enabled: true
+    host: "0.0.0.0"
+    port: 7300
+
+  # Resource requirements
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+
+  # Service configuration
+  service:
+    type: ClusterIP
+    annotations:
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "7300"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: batcher-private-key
+  labels:
+    app.kubernetes.io/name: op-stack-operator
+    app.kubernetes.io/managed-by: kustomize
+type: Opaque
+data:
+  # Example private key (DO NOT USE IN PRODUCTION!)
+  # This is a test key for development only - exactly 64 hex characters after 0x
+  private-key: MHgxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmCg==
