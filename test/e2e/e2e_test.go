@@ -434,7 +434,8 @@ spec:
 
 			By("checking OpNode status conditions")
 			Eventually(func() bool {
-				cmd := exec.Command("kubectl", "get", "opnode", "test-opnode-replica", "-n", namespace, "-o", "jsonpath={.status.conditions}")
+				cmd := exec.Command("kubectl", "get", "opnode", "test-opnode-replica", "-n", namespace,
+					"-o", "jsonpath={.status.conditions}")
 				output, err := utils.Run(cmd)
 				if err != nil {
 					return false

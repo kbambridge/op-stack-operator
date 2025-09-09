@@ -272,29 +272,8 @@ func createOpGethContainer(
 	return container
 }
 
-// createOpNodeContainer creates the op-node container
-func createOpNodeContainer(
-	opNode *optimismv1alpha1.OpNode,
-	network *optimismv1alpha1.OptimismNetwork,
-) corev1.Container {
-	// Default resource requirements for op-node
-	resources := corev1.ResourceRequirements{
-		Requests: corev1.ResourceList{
-			corev1.ResourceCPU:    resource.MustParse("500m"),
-			corev1.ResourceMemory: resource.MustParse("1Gi"),
-		},
-		Limits: corev1.ResourceList{
-			corev1.ResourceCPU:    resource.MustParse("2000m"),
-			corev1.ResourceMemory: resource.MustParse("4Gi"),
-		},
-	}
-
-	// Override with user-specified resources
-	if opNode.Spec.Resources != nil && opNode.Spec.Resources.OpNode != nil {
-		resources = *opNode.Spec.Resources.OpNode
-	}
-
-	// Build command args
+// buildOpNodeArgs builds command line arguments for op-node
+func buildOpNodeArgs(opNode *optimismv1alpha1.OpNode, network *optimismv1alpha1.OptimismNetwork) []string {
 	authRPCPort := getAuthRPCPort(opNode)
 	args := []string{
 		"--l1=" + network.Spec.L1RpcUrl,
@@ -308,14 +287,23 @@ func createOpNodeContainer(
 	}
 
 	// Use network name for well-known networks, otherwise use rollup config
-	// This avoids the conflict between --network and --rollup.config flags
 	if network.Spec.NetworkName != "" && isWellKnownNetwork(network.Spec.NetworkName) {
 		args = append(args, "--network="+network.Spec.NetworkName)
 	} else {
 		args = append(args, "--rollup.config=/config/rollup.json")
 	}
 
-	// Add RPC configuration
+	args = addRPCArgs(args, opNode)
+	args = addP2PArgs(args, opNode)
+	args = addSequencerArgs(args, opNode)
+	args = addLoggingArgs(args, network)
+	args = addMetricsArgs(args, network)
+
+	return args
+}
+
+// addRPCArgs adds RPC configuration arguments
+func addRPCArgs(args []string, opNode *optimismv1alpha1.OpNode) []string {
 	if opNode.Spec.OpNode.RPC != nil && opNode.Spec.OpNode.RPC.Enabled {
 		rpcConfig := opNode.Spec.OpNode.RPC
 		args = append(args, "--rpc.addr="+getDefaultString(rpcConfig.Host, "0.0.0.0"))
@@ -324,41 +312,45 @@ func createOpNodeContainer(
 			args = append(args, "--rpc.enable-admin")
 		}
 	}
+	return args
+}
 
-	// Add P2P configuration
+// addP2PArgs adds P2P configuration arguments
+func addP2PArgs(args []string, opNode *optimismv1alpha1.OpNode) []string {
 	if opNode.Spec.OpNode.P2P != nil && opNode.Spec.OpNode.P2P.Enabled {
 		p2pConfig := opNode.Spec.OpNode.P2P
 		args = append(args, "--p2p.listen.tcp="+fmt.Sprintf("%d", getDefaultInt32(p2pConfig.ListenPort, 9003)))
-
-		// Add data directory for P2P discovery database
 		args = append(args, "--p2p.discovery.path=/data/opnode/discovery")
 
 		if p2pConfig.Discovery != nil && !p2pConfig.Discovery.Enabled {
 			args = append(args, "--p2p.no-discovery")
 		}
 
-		if len(p2pConfig.Static) > 0 {
-			for _, peer := range p2pConfig.Static {
-				args = append(args, "--p2p.static="+peer)
-			}
+		for _, peer := range p2pConfig.Static {
+			args = append(args, "--p2p.static="+peer)
 		}
 
-		// Add P2P private key path if either auto-generated or user-provided
 		if p2pConfig.PrivateKey != nil &&
 			(p2pConfig.PrivateKey.Generate || p2pConfig.PrivateKey.SecretRef != nil) {
 			args = append(args, "--p2p.priv.path=/secrets/p2p/private-key")
 		}
 	}
+	return args
+}
 
-	// Add sequencer configuration
+// addSequencerArgs adds sequencer configuration arguments
+func addSequencerArgs(args []string, opNode *optimismv1alpha1.OpNode) []string {
 	if opNode.Spec.OpNode.Sequencer != nil && opNode.Spec.OpNode.Sequencer.Enabled {
 		args = append(args, "--sequencer.enabled")
 		if opNode.Spec.OpNode.Sequencer.BlockTime != "" {
 			args = append(args, "--sequencer.l1-confs=4")
 		}
 	}
+	return args
+}
 
-	// Add logging configuration
+// addLoggingArgs adds logging configuration arguments
+func addLoggingArgs(args []string, network *optimismv1alpha1.OptimismNetwork) []string {
 	if network.Spec.SharedConfig != nil && network.Spec.SharedConfig.Logging != nil {
 		logging := network.Spec.SharedConfig.Logging
 		if logging.Level != "" {
@@ -368,8 +360,11 @@ func createOpNodeContainer(
 			args = append(args, "--log.format="+logging.Format)
 		}
 	}
+	return args
+}
 
-	// Add metrics configuration
+// addMetricsArgs adds metrics configuration arguments
+func addMetricsArgs(args []string, network *optimismv1alpha1.OptimismNetwork) []string {
 	if network.Spec.SharedConfig != nil &&
 		network.Spec.SharedConfig.Metrics != nil &&
 		network.Spec.SharedConfig.Metrics.Enabled {
@@ -378,14 +373,17 @@ func createOpNodeContainer(
 		args = append(args, "--metrics.addr=0.0.0.0")
 		args = append(args, "--metrics.port="+fmt.Sprintf("%d", getDefaultInt32(metrics.Port, 7300)))
 	}
+	return args
+}
 
+// buildOpNodeVolumeMounts builds volume mounts for op-node container
+func buildOpNodeVolumeMounts(opNode *optimismv1alpha1.OpNode) []corev1.VolumeMount {
 	volumeMounts := []corev1.VolumeMount{
 		{Name: "jwt-secret", MountPath: "/secrets/jwt", ReadOnly: true},
 		{Name: "rollup-config", MountPath: "/config", ReadOnly: true},
 		{Name: "op-node-data", MountPath: "/data/opnode", ReadOnly: false},
 	}
 
-	// Add P2P key mount if either auto-generated or user-provided
 	if opNode.Spec.OpNode.P2P != nil &&
 		opNode.Spec.OpNode.P2P.PrivateKey != nil &&
 		(opNode.Spec.OpNode.P2P.PrivateKey.Generate || opNode.Spec.OpNode.P2P.PrivateKey.SecretRef != nil) {
@@ -393,6 +391,38 @@ func createOpNodeContainer(
 			Name: "p2p-key", MountPath: "/secrets/p2p", ReadOnly: true,
 		})
 	}
+
+	return volumeMounts
+}
+
+// getOpNodeResources returns resource requirements for op-node container
+func getOpNodeResources(opNode *optimismv1alpha1.OpNode) corev1.ResourceRequirements {
+	resources := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("500m"),
+			corev1.ResourceMemory: resource.MustParse("1Gi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("2000m"),
+			corev1.ResourceMemory: resource.MustParse("4Gi"),
+		},
+	}
+
+	if opNode.Spec.Resources != nil && opNode.Spec.Resources.OpNode != nil {
+		resources = *opNode.Spec.Resources.OpNode
+	}
+
+	return resources
+}
+
+// createOpNodeContainer creates the op-node container
+func createOpNodeContainer(
+	opNode *optimismv1alpha1.OpNode,
+	network *optimismv1alpha1.OptimismNetwork,
+) corev1.Container {
+	args := buildOpNodeArgs(opNode, network)
+	volumeMounts := buildOpNodeVolumeMounts(opNode)
+	resources := getOpNodeResources(opNode)
 
 	container := corev1.Container{
 		Name:            "op-node",
